@@ -429,6 +429,7 @@ export {
   DEFAULT_DESTROYED_ENVIRONMENT_PRUNE_BATCH_SIZE,
   DESTROYED_ENVIRONMENT_TTL_MS,
   migrateNextCompletedEventItemOutput,
+  migrateNextLegacyImageGenerationOutput,
   pruneClosedSessions,
   pruneDestroyedEnvironments,
   sweepManagedEnvironments,
@@ -436,6 +437,7 @@ export {
 export type {
   MigrateNextCompletedEventItemOutputArgs,
   MigrateNextCompletedEventItemOutputResult,
+  MigrateNextLegacyImageGenerationOutputArgs,
 } from "./sweeps.js";
 export {
   compactDatabase,
