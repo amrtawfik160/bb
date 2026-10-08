@@ -4145,7 +4145,7 @@ describe("Account Pool plugin", () => {
         const unavailable = await send();
         expect(unavailable.status).toBe(429);
         expect(unavailable.headers.get("retry-after")).toBe("60");
-        await unavailable.text();
+        expect(await unavailable.text()).toContain("2027-01-15T08:02:00.000Z");
         expect(attempts.slice(5)).toEqual(["sk-second", "sk-first"]);
         const stillUnavailable = await send();
         expect(stillUnavailable.status).toBe(429);
@@ -6434,6 +6434,95 @@ describe("sequential pool recovery", () => {
     expect(await send()).toBe(429);
     expect(await send()).toBe(429);
     expect(upstreamCalls).toBe(3);
+  });
+
+  it("switches pinned Claude OAuth sessions at threshold 1 and reuses accounts at reset", async () => {
+    const baseTime = Date.parse("2026-10-08T18:45:00Z");
+    let now = baseTime;
+    let imported = 0;
+    const rejected = new Set<string>();
+    const attempts: string[] = [];
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+      source: "import",
+      options: {
+        now: () => now,
+        importCredentials: async () => {
+          imported += 1;
+          return importedCredentials({
+            accessToken: `oauth-${imported}`,
+            email: `account-${imported}@example.com`,
+            accountUuid: `11111111-1111-4111-8111-${String(imported).padStart(12, "0")}`,
+            expiresAt: baseTime + 86_400_000,
+          });
+        },
+        fetch: async (input, init) => {
+          if (!String(input).endsWith("/v1/messages")) return Response.json({});
+          const key = new Headers(init?.headers).get("authorization");
+          if (key === null) throw new Error("Missing OAuth credential.");
+          attempts.push(key);
+          if (!rejected.has(key)) return Response.json({ account: key });
+          return Response.json(
+            { error: { type: "rate_limit_error" } },
+            {
+              status: 429,
+              headers: {
+                "anthropic-ratelimit-unified-5h-status": "rejected",
+                "anthropic-ratelimit-unified-5h-utilization": "1",
+                "anthropic-ratelimit-unified-5h-reset": String(
+                  (baseTime + 60_000) / 1_000,
+                ),
+              },
+            },
+          );
+        },
+      },
+    });
+    await fixture.host.harness.behavior.callRpc("account.add", {
+      provider: "claude",
+      source: { kind: "import" },
+      label: null,
+      priority: 100,
+    });
+    await fixture.host.harness.behavior.callRpc("config.set", {
+      switchThreshold: 1,
+    });
+    const send = () =>
+      fixture.host.harness.behavior.fetchHttp("POST", "/v1/messages", {
+        headers: authHeaders(fixture.key),
+        body: JSON.stringify({
+          model: "claude-sonnet",
+          metadata: { user_id: JSON.stringify({ session_id: "same-session" }) },
+        }),
+      });
+    expect(await (await send()).json()).toEqual({ account: "Bearer oauth-1" });
+    rejected.add("Bearer oauth-1");
+    expect(await (await send()).json()).toEqual({ account: "Bearer oauth-2" });
+    const status = statusSchema.parse(
+      await fixture.host.harness.behavior.callRpc("status.get", null),
+    );
+    expect(
+      status.accounts.map((account) => [
+        account.status,
+        account.fiveHourUtilization,
+      ]),
+    ).toEqual([
+      ["exhausted", 1],
+      ["ready", null],
+    ]);
+    now += 60_000;
+    rejected.delete("Bearer oauth-1");
+    expect(await (await send()).json()).toEqual({ account: "Bearer oauth-2" });
+    rejected.add("Bearer oauth-2");
+    expect(await (await send()).json()).toEqual({ account: "Bearer oauth-1" });
+    expect(attempts).toEqual([
+      "Bearer oauth-1",
+      "Bearer oauth-1",
+      "Bearer oauth-2",
+      "Bearer oauth-2",
+      "Bearer oauth-2",
+      "Bearer oauth-1",
+    ]);
   });
 
   it("refreshes exhausted usage before refusing a request, at most every 30 seconds per account", async () => {
