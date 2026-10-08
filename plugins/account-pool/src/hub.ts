@@ -1295,7 +1295,9 @@ export class AccountPoolHub {
     );
     return adapter.errorResponse(
       429,
-      "No Account Pooler account is currently eligible.",
+      next === undefined
+        ? "No Account Pooler account is currently eligible."
+        : `No Account Pooler account is currently eligible. Earliest known account availability is ${new Date(next).toISOString()}.`,
       { "retry-after": String(retryAfter) },
     );
   }
